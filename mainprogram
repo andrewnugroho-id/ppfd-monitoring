@@ -1,0 +1,231 @@
+/*
+  Project Information
+  -------------------
+  Spectroscopy-Based PPFD Monitoring System
+
+  This program implements a low-cost photosynthetic light monitoring system
+  using a multi-channel spectral sensor (AS7265x) and an ESP32 microcontroller.
+  The system estimates photosynthetic photon flux density (PPFD), logs
+  time-resolved spectral data to an SD card, and optionally transmits data
+  to a remote server.
+
+  Intended use:
+  - Research and reproducibility
+  - Indoor farming and plant factory environments
+*/
+
+// ==========================
+// Included Libraries
+// ==========================
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
+#include <RTClib.h>
+#include "SparkFun_AS7265X.h"
+#include "SD.h"
+#include "SPI.h"
+#include "HTTPClient.h"
+
+// ==========================
+// Hardware Pin Definitions
+// ==========================
+#define DHTPIN 4
+#define SD_CS_PIN 5  // CS: 5, SCK: 18, MISO: 19, MOSI: 23
+
+// ==========================
+// Wi-Fi Configuration
+// ==========================
+const char* ssid = "Skripsis1";
+const char* password = "bismillah";
+
+// ==========================
+// Server Configuration
+// ==========================
+const char* apikey = "xxxx";
+const char* serverUrl = "http://agrarise.com/xxx";
+
+// ==========================
+// Time Configuration
+// ==========================
+// UTC offset for Western Indonesia Time (GMT +7)
+const long utcOffsetInSeconds = 25200;
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+
+// ==========================
+// Global Objects
+// ==========================
+File myFile;
+RTC_DS3231 rtc;
+AS7265X sensor;
+
+// Path for data storage on SD card
+const char* path = "/data.csv";
+
+// ==========================
+// Setup Function
+// ==========================
+void setup() {
+  Serial.begin(9600);
+  delay(2000); // Delay to ensure power stability
+
+  // Initialize AS7265x spectral sensor
+  Serial.println("Initializing AS7265x spectral sensor...");
+  if (!sensor.begin()) {
+    Serial.println("Spectral sensor not detected. Check wiring.");
+    while (1);
+  }
+  Serial.println("Spectral sensor initialized.");
+
+  // Initialize RTC
+  if (!rtc.begin()) {
+    Serial.println("RTC module not found.");
+    while (1);
+  }
+
+  // Connect to Wi-Fi network
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("\nWi-Fi connected.");
+
+  // Initialize NTP client
+  timeClient.begin();
+  while (!timeClient.update()) {
+    timeClient.forceUpdate();
+  }
+
+  // Synchronize RTC with NTP time
+  rtc.adjust(DateTime(timeClient.getEpochTime()));
+
+  // Initialize SD card
+  delay(1000);
+  if (!SD.begin(SD_CS_PIN)) {
+    Serial.println("SD card initialization failed.");
+    while (1);
+  }
+  Serial.println("SD card initialized.");
+}
+
+// ==========================
+// Main Loop
+// ==========================
+void loop() {
+
+  // Get current time from RTC
+  DateTime now = rtc.now();
+  char timestamp[32];
+  sprintf(timestamp, "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+  Serial.print("Time: ");
+  Serial.println(timestamp);
+
+  // Check operational hours
+  // Data acquisition is suspended outside lighting operation periods
+  int currentHour = now.hour();
+  int currentMinute = now.minute();
+  if ((currentHour == 20 && currentMinute >= 10) ||
+      (currentHour >= 21) ||
+      (currentHour < 7) ||
+      (currentHour == 7 && currentMinute < 50)) {
+
+    Serial.println("Outside operational hours. Data logging suspended.");
+    delay(60000); // Wait 1 minute before checking again
+    return;
+  }
+
+  // Synchronize RTC with NTP every hour
+  static unsigned long lastSyncTime = 0;
+  if (millis() - lastSyncTime > 3600000) {
+    while (!timeClient.update()) {
+      timeClient.forceUpdate();
+    }
+    rtc.adjust(DateTime(timeClient.getEpochTime()));
+    lastSyncTime = millis();
+  }
+
+  // Acquire spectral measurements (18 channels)
+  sensor.takeMeasurements();
+
+  // Sum all calibrated spectral channels
+  double totalSpectralSum = 0;
+  totalSpectralSum += sensor.getCalibratedA();
+  totalSpectralSum += sensor.getCalibratedB();
+  totalSpectralSum += sensor.getCalibratedC();
+  totalSpectralSum += sensor.getCalibratedD();
+  totalSpectralSum += sensor.getCalibratedE();
+  totalSpectralSum += sensor.getCalibratedF();
+  totalSpectralSum += sensor.getCalibratedG();
+  totalSpectralSum += sensor.getCalibratedH();
+  totalSpectralSum += sensor.getCalibratedI();
+  totalSpectralSum += sensor.getCalibratedJ();
+  totalSpectralSum += sensor.getCalibratedK();
+  totalSpectralSum += sensor.getCalibratedL();
+  totalSpectralSum += sensor.getCalibratedR();
+  totalSpectralSum += sensor.getCalibratedS();
+  totalSpectralSum += sensor.getCalibratedT();
+  totalSpectralSum += sensor.getCalibratedU();
+  totalSpectralSum += sensor.getCalibratedV();
+  totalSpectralSum += sensor.getCalibratedW();
+
+  // Estimate PPFD using a linear calibration model
+  float ppfd = 0.0078 * totalSpectralSum - 15.487;
+
+  // Aggregate spectral bands
+  double blueViolet = sensor.getCalibratedA() + sensor.getCalibratedB() +
+                      sensor.getCalibratedC() + sensor.getCalibratedD();
+  double green = sensor.getCalibratedE() + sensor.getCalibratedF() +
+                 sensor.getCalibratedG();
+  double yellowOrange = sensor.getCalibratedH() + sensor.getCalibratedR();
+  double red = sensor.getCalibratedI() + sensor.getCalibratedS() +
+               sensor.getCalibratedJ() + sensor.getCalibratedT();
+  double infrared = sensor.getCalibratedU() + sensor.getCalibratedV() +
+                    sensor.getCalibratedW() + sensor.getCalibratedK() +
+                    sensor.getCalibratedL();
+
+  // Log data to SD card (CSV format)
+  myFile = SD.open(path, FILE_APPEND);
+  if (myFile) {
+    myFile.print(timestamp); myFile.print(",");
+    myFile.print(totalSpectralSum); myFile.print(",");
+    myFile.print(ppfd); myFile.print(",");
+    myFile.print(blueViolet); myFile.print(",");
+    myFile.print(green); myFile.print(",");
+    myFile.print(yellowOrange); myFile.print(",");
+    myFile.print(red); myFile.print(",");
+    myFile.println(infrared);
+    myFile.close();
+    Serial.println("Data successfully written to SD card.");
+  } else {
+    Serial.println("Failed to write data to SD card.");
+  }
+
+  // Send data to remote server (optional)
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = String(serverUrl) +
+                 "?apikey=" + apikey +
+                 "&S1=" + String(ppfd) +
+                 "&S2=" + String(totalSpectralSum) +
+                 "&S3=" + String(blueViolet) +
+                 "&S4=" + String(green) +
+                 "&S5=" + String(yellowOrange) +
+                 "&S6=" + String(red) +
+                 "&S7=" + String(infrared);
+
+    http.begin(url);
+    int httpResponseCode = http.GET();
+
+    if (httpResponseCode > 0) {
+      Serial.println("Data sent successfully.");
+    } else {
+      Serial.println("HTTP request failed.");
+    }
+    http.end();
+  }
+
+  // Sampling interval: 10 minutes
+  delay(600000);
+}
