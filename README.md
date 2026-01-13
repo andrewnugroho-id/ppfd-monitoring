@@ -1,9 +1,7 @@
 # Spectroscopy-Based PPFD Monitoring System
 
-This repository contains the source code used in the study:
-
-"A Low-Cost Spectroscopy-Based System for Monitoring Photosynthetic Light and
-Daily Light Integral under Dynamic Lighting in Plant Factories"
+This repository contains the source code used in the study:Spectroscopy-Based System for Monitoring Photosynthetic Light and
+Daily Light Integral
 
 ## Overview
 This project implements a low-cost monitoring system for measuring
